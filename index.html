@@ -1009,37 +1009,63 @@ tr:hover td { background: var(--gold-pale); }
 
 <script>
 // ═══════════════════════════════════════
-//  DATABASE (localStorage)
+//  API — Railway Backend
 // ═══════════════════════════════════════
+const API = 'https://golden-notes-backend-production.up.railway.app/api';
+
+async function apiGet(path) {
+  try {
+    const r = await fetch(API + path);
+    if(!r.ok) throw new Error();
+    return await r.json();
+  } catch { return []; }
+}
+
+async function apiPost(path, data) {
+  try {
+    const r = await fetch(API + path, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(data)
+    });
+    return await r.json();
+  } catch(e) { toast('خطأ في الاتصال بالسيرفر', 'error'); return null; }
+}
+
+async function apiDelete(path) {
+  try {
+    await fetch(API + path, {method: 'DELETE'});
+  } catch { toast('خطأ في الحذف', 'error'); }
+}
+
+// Local state (loaded from API)
+let sales = [], expenses = [], inventory = [], invMoves = [];
+let products = [], posList = [], owners = [], distributions = [];
+
+async function loadAll() {
+  [sales, expenses, inventory, invMoves, products, posList, owners, distributions] = await Promise.all([
+    apiGet('/sales'),
+    apiGet('/expenses'),
+    apiGet('/inventory'),
+    apiGet('/inventory/moves'),
+    apiGet('/products'),
+    apiGet('/pos'),
+    apiGet('/owners'),
+    apiGet('/distributions'),
+  ]);
+}
+
+// Legacy DB shim for inventory access
 const DB = {
-  get(key) { try { return JSON.parse(localStorage.getItem('gn_'+key)||'null'); } catch { return null; } },
-  set(key, val) { localStorage.setItem('gn_'+key, JSON.stringify(val)); },
-  def(key, def) { const v = DB.get(key); if(v===null){ DB.set(key,def); return def; } return v; }
+  get(key) {
+    if(key==='inventory') return inventory;
+    if(key==='invMoves') return invMoves;
+    return null;
+  },
+  set() {}
 };
 
-// Init defaults
-const sales     = DB.def('sales', []);
-const expenses  = DB.def('expenses', []);
-const inventory = DB.def('inventory', []);
-const invMoves  = DB.def('invMoves', []);
-const products  = DB.def('products', [
-  {id:1, name:'منتج أ', unit:'قطعة'},
-  {id:2, name:'منتج ب', unit:'قطعة'},
-  {id:3, name:'منتج ج', unit:'كيلو'},
-]);
-const posList   = DB.def('posList', [
-  {id:1, name:'الفرع الرئيسي', loc:'المركز'},
-  {id:2, name:'فرع المول', loc:'المول التجاري'},
-  {id:3, name:'المتجر الإلكتروني', loc:'أونلاين'},
-]);
-const owners    = DB.def('owners', [
-  {id:1, name:'المالك الأول', pct:50, withdrawn:0},
-  {id:2, name:'المالك الثاني', pct:30, withdrawn:0},
-  {id:3, name:'المالك الثالث', pct:20, withdrawn:0},
-]);
-const distributions = DB.def('distributions', []);
-
-function save(key, arr) { DB.set(key, arr); }
+function save() {} // no-op, API handles persistence
 
 // ═══════════════════════════════════════
 //  UTILITIES
@@ -1276,6 +1302,28 @@ function deleteSale(id) {
   if(idx>-1) { sales.splice(idx,1); save('sales',sales); renderSales(); toast('تم حذف السجل'); }
 }
 
+async function saveSale() {
+  const date = document.getElementById('sf-date').value;
+  const product = document.getElementById('sf-product').value;
+  const pos = document.getElementById('sf-pos').value;
+  const qty = parseFloat(document.getElementById('sf-qty').value);
+  const price = parseFloat(document.getElementById('sf-price').value);
+  const status = document.getElementById('sf-status').value;
+  const notes = document.getElementById('sf-notes').value;
+  if(!date||!product||!pos||!qty||!price) { toast('يرجى تعبئة جميع الحقول','error'); return; }
+  await apiPost('/sales', {date, product, pos, qty, price, status, notes});
+  toast('تم حفظ بيانات المبيعات بنجاح');
+  document.getElementById('sf-qty').value='';
+  document.getElementById('sf-price').value='';
+  document.getElementById('sf-total').value='';
+  await loadAll(); renderSales();
+}
+
+async function deleteSale(id) {
+  await apiDelete('/sales/'+id);
+  await loadAll(); renderSales(); toast('تم حذف السجل');
+}
+
 // ── EXPENSES ──
 function renderExpenses() {
   const sorted = [...expenses].sort((a,b)=>b.date>a.date?1:-1);
@@ -1289,31 +1337,29 @@ function renderExpenses() {
   document.getElementById('ef-date').value = today();
 }
 
-function saveExpense() {
+async function saveExpense() {
   const date = document.getElementById('ef-date').value;
   const item = document.getElementById('ef-item').value;
   const category = document.getElementById('ef-cat').value;
   const amount = parseFloat(document.getElementById('ef-amount').value);
   const notes = document.getElementById('ef-notes').value;
   if(!date||!item||!amount) { toast('يرجى تعبئة جميع الحقول','error'); return; }
-  expenses.push({id:uid(), date, item, category, amount, notes});
-  save('expenses', expenses);
+  await apiPost('/expenses', {date, item, category, amount, notes});
   toast('تم حفظ المصروف بنجاح');
   document.getElementById('ef-item').value='';
   document.getElementById('ef-amount').value='';
   document.getElementById('ef-notes').value='';
-  renderExpenses();
+  await loadAll(); renderExpenses();
 }
 
-function deleteExpense(id) {
-  const idx = expenses.findIndex(e=>e.id===id);
-  if(idx>-1) { expenses.splice(idx,1); save('expenses',expenses); renderExpenses(); toast('تم حذف السجل'); }
+async function deleteExpense(id) {
+  await apiDelete('/expenses/'+id);
+  await loadAll(); renderExpenses(); toast('تم حذف السجل');
 }
 
 // ── INVENTORY ──
 function renderInventory() {
-  const invArr = DB.get('inventory')||[];
-  document.getElementById('invListBody').innerHTML = invArr.length ? invArr.map(i=>{
+  document.getElementById('invListBody').innerHTML = inventory.length ? inventory.map(i=>{
     const margin = parseFloat(i.sell)>0 ? (((parseFloat(i.sell)-parseFloat(i.cost))/parseFloat(i.sell))*100).toFixed(1) : 0;
     const low = parseFloat(i.qty)<10;
     return `<div class="inv-row-items" style="display:contents">
@@ -1326,15 +1372,14 @@ function renderInventory() {
     </div>`;
   }).join('') : '<div style="padding:20px;text-align:center;color:var(--text-3);grid-column:span 6">لا يوجد مخزون</div>';
 
-  const moves = DB.get('invMoves')||[];
-  document.getElementById('invMovesBody').innerHTML = moves.length ? [...moves].reverse().map(m=>`
-    <tr><td>${m.date}</td><td>${m.product}</td><td>${m.type.includes('خروج')?'<span class="badge badge-red">خروج</span>':'<span class="badge badge-green">دخول</span>'}</td><td>${m.qty}</td><td>${m.notes||'—'}</td></tr>
+  document.getElementById('invMovesBody').innerHTML = invMoves.length ? [...invMoves].reverse().map(m=>`
+    <tr><td>${m.date}</td><td>${m.product}</td><td>${(m.move_type||m.type||'').includes('خروج')?'<span class="badge badge-red">خروج</span>':'<span class="badge badge-green">دخول</span>'}</td><td>${m.qty}</td><td>${m.notes||'—'}</td></tr>
   `).join('') : '<tr><td colspan="5" style="text-align:center;color:var(--text-3);padding:20px">لا توجد حركات</td></tr>';
 
   document.getElementById('invf-date').value = today();
 }
 
-function saveInventory() {
+async function saveInventory() {
   const product = document.getElementById('invf-prod').value;
   const qty = parseFloat(document.getElementById('invf-qty').value);
   const cost = parseFloat(document.getElementById('invf-cost').value);
@@ -1342,30 +1387,16 @@ function saveInventory() {
   const date = document.getElementById('invf-date').value;
   const notes = document.getElementById('invf-notes').value;
   if(!product||!qty||!cost||!sell) { toast('يرجى تعبئة جميع الحقول','error'); return; }
-
-  const prod = products.find(p=>p.name===product);
-  const invArr = DB.get('inventory')||[];
-  const existing = invArr.findIndex(i=>i.product===product);
-  if(existing>-1) {
-    invArr[existing].qty = parseFloat(invArr[existing].qty)+qty;
-    invArr[existing].cost = cost;
-    invArr[existing].sell = sell;
-  } else {
-    invArr.push({product, unit: prod?.unit||'وحدة', qty, cost, sell});
-  }
-  save('inventory', invArr);
-  invMoves.push({date, product, type:'دخول', qty, notes});
-  save('invMoves', invMoves);
+  await apiPost('/inventory', {product, qty, cost, sell, date, notes});
   toast('تم تحديث المخزون');
-  renderInventory();
+  await loadAll(); renderInventory();
 }
 
 // ── PRODUCTS / POS ──
 function renderProducts() {
-  const invArr = DB.get('inventory')||[];
   document.getElementById('productsBody').innerHTML = products.length ? products.map(p=>{
-    const inv = invArr.find(i=>i.product===p.name);
-    return `<tr><td>${p.name}</td><td>${p.unit}</td><td>${inv?inv.qty+' '+inv.unit:'0'}</td>
+    const inv = inventory.find(i=>i.product===p.name);
+    return `<tr><td>${p.name}</td><td>${p.unit}</td><td>${inv?inv.qty+' '+(inv.unit||'وحدة'):'0'}</td>
       <td><button class="btn" style="padding:4px 8px;font-size:11px;color:var(--red);border-color:var(--red)" onclick="deleteProduct(${p.id})">حذف</button></td></tr>`;
   }).join('') : '<tr><td colspan="4" style="text-align:center;color:var(--text-3);padding:20px">لا توجد منتجات</td></tr>';
 
@@ -1376,43 +1407,36 @@ function renderProducts() {
   `).join('') : '';
 }
 
-function addProduct() {
+async function addProduct() {
   const name = document.getElementById('prod-name').value.trim();
   const unit = document.getElementById('prod-unit').value.trim()||'قطعة';
   if(!name) { toast('أدخل اسم المنتج','error'); return; }
-  if(products.find(p=>p.name===name)) { toast('المنتج موجود بالفعل','error'); return; }
-  const newId = products.length ? Math.max(...products.map(p=>p.id))+1 : 1;
-  products.push({id:newId, name, unit});
-  save('products', products);
+  await apiPost('/products', {name, unit});
   document.getElementById('prod-name').value='';
   document.getElementById('prod-unit').value='';
-  populateSelects();
-  renderProducts();
+  await loadAll(); populateSelects(); renderProducts();
   toast('تم إضافة المنتج');
 }
 
-function deleteProduct(id) {
-  const idx = products.findIndex(p=>p.id===id);
-  if(idx>-1) { products.splice(idx,1); save('products',products); renderProducts(); populateSelects(); toast('تم حذف المنتج'); }
+async function deleteProduct(id) {
+  await apiDelete('/products/'+id);
+  await loadAll(); renderProducts(); populateSelects(); toast('تم حذف المنتج');
 }
 
-function addPOS() {
+async function addPOS() {
   const name = document.getElementById('pos-name').value.trim();
   const loc = document.getElementById('pos-loc').value.trim();
   if(!name) { toast('أدخل اسم نقطة البيع','error'); return; }
-  const newId = posList.length ? Math.max(...posList.map(p=>p.id))+1 : 1;
-  posList.push({id:newId, name, loc});
-  save('posList', posList);
+  await apiPost('/pos', {name, loc});
   document.getElementById('pos-name').value='';
   document.getElementById('pos-loc').value='';
-  populateSelects();
-  renderProducts();
+  await loadAll(); populateSelects(); renderProducts();
   toast('تم إضافة نقطة البيع');
 }
 
-function deletePOS(id) {
-  const idx = posList.findIndex(p=>p.id===id);
-  if(idx>-1) { posList.splice(idx,1); save('posList',posList); renderProducts(); populateSelects(); toast('تم الحذف'); }
+async function deletePOS(id) {
+  await apiDelete('/pos/'+id);
+  await loadAll(); renderProducts(); populateSelects(); toast('تم الحذف');
 }
 
 // ── OWNERS ──
@@ -1421,7 +1445,7 @@ function renderOwners() {
   const allExp = expenses.reduce((a,e)=>a+parseFloat(e.amount||0),0);
   const totalProfit = allSales - allExp;
 
-  document.getElementById('ownersGrid').innerHTML = owners.map((o,i)=>{
+  document.getElementById('ownersGrid').innerHTML = owners.map(o=>{
     const initials = o.name.slice(0,2);
     const share = totalProfit*(o.pct/100);
     const withdrawn = parseFloat(o.withdrawn||0);
@@ -1454,40 +1478,33 @@ function renderOwners() {
   sel.innerHTML = owners.map(o=>`<option>${o.name}</option>`).join('');
 }
 
-function saveDistribution() {
+async function saveDistribution() {
   const date = document.getElementById('of-date').value;
-  const ownerName = document.getElementById('of-owner').value;
+  const owner = document.getElementById('of-owner').value;
   const amount = parseFloat(document.getElementById('of-amount').value);
   const method = document.getElementById('of-method').value;
   const notes = document.getElementById('of-notes').value;
   if(!date||!amount) { toast('يرجى تعبئة جميع الحقول','error'); return; }
-
-  distributions.push({id:uid(), date, owner:ownerName, amount, method, notes});
-  save('distributions', distributions);
-  const o = owners.find(o=>o.name===ownerName);
-  if(o) { o.withdrawn = parseFloat(o.withdrawn||0)+amount; save('owners',owners); }
+  await apiPost('/distributions', {date, owner, amount, method, notes});
   toast('تم تسجيل السحب');
-  renderOwners();
+  await loadAll(); renderOwners();
 }
 
-function addOwner() {
+async function addOwner() {
   const name = document.getElementById('own-name').value.trim();
   const pct = parseFloat(document.getElementById('own-pct').value);
   if(!name||!pct) { toast('أدخل الاسم والنسبة','error'); return; }
-  const totalPct = owners.reduce((a,o)=>a+o.pct,0)+pct;
-  if(totalPct>100) { toast('مجموع النسب يتجاوز 100%','error'); return; }
-  const newId = owners.length ? Math.max(...owners.map(o=>o.id))+1 : 1;
-  owners.push({id:newId, name, pct, withdrawn:0});
-  save('owners', owners);
+  const res = await apiPost('/owners', {name, pct});
+  if(res && res.detail) { toast(res.detail,'error'); return; }
   document.getElementById('own-name').value='';
   document.getElementById('own-pct').value='';
-  renderOwners();
+  await loadAll(); renderOwners();
   toast('تم إضافة المالك');
 }
 
-function deleteOwner(id) {
-  const idx = owners.findIndex(o=>o.id===id);
-  if(idx>-1) { owners.splice(idx,1); save('owners',owners); renderOwners(); toast('تم الحذف'); }
+async function deleteOwner(id) {
+  await apiDelete('/owners/'+id);
+  await loadAll(); renderOwners(); toast('تم الحذف');
 }
 
 // ── REPORTS ──
@@ -1522,7 +1539,6 @@ function renderReports() {
     </tr>
   `).join('');
 
-  // Monthly chart
   const months=['يناير','فبراير','مارس','أبريل','مايو','يونيو','يوليو','أغسطس','سبتمبر','أكتوبر','نوفمبر','ديسمبر'];
   const mData = months.map((_,mi)=>{
     const key = `${now.getFullYear()}-${String(mi+1).padStart(2,'0')}`;
@@ -1541,10 +1557,9 @@ function renderReports() {
 function populateSelects() {
   const prods = products.map(p=>`<option>${p.name}</option>`).join('');
   const poss = posList.map(p=>`<option>${p.name}</option>`).join('');
-  const invProds = products.map(p=>`<option>${p.name}</option>`).join('');
   ['sf-product'].forEach(id=>{ const el=document.getElementById(id); if(el) el.innerHTML=prods; });
   ['sf-pos'].forEach(id=>{ const el=document.getElementById(id); if(el) el.innerHTML=poss; });
-  ['invf-prod'].forEach(id=>{ const el=document.getElementById(id); if(el) el.innerHTML=invProds; });
+  ['invf-prod'].forEach(id=>{ const el=document.getElementById(id); if(el) el.innerHTML=prods; });
 }
 
 // ═══════════════════════════════════════
@@ -1569,7 +1584,6 @@ function processFile(file) {
       const wb = XLSX.read(e.target.result, {type:'binary'});
       pendingImportData = {};
       let html = '';
-
       wb.SheetNames.forEach(sheetName => {
         const data = XLSX.utils.sheet_to_json(wb.Sheets[sheetName]);
         if(!data.length) return;
@@ -1584,7 +1598,6 @@ function processFile(file) {
           </div>
         </div>`;
       });
-
       document.getElementById('importPreviewContent').innerHTML = html;
       document.getElementById('importPreview').style.display='block';
       toast('تم قراءة الملف — راجع البيانات قبل الاستيراد');
@@ -1595,59 +1608,35 @@ function processFile(file) {
   reader.readAsBinaryString(file);
 }
 
-function confirmImport() {
+async function confirmImport() {
   if(!pendingImportData) return;
+  toast('جاري الاستيراد...');
+  const formData = new FormData();
+  const blob = new Blob([JSON.stringify(pendingImportData)], {type:'application/json'});
+  // Send via API
   let imported = 0;
-
-  Object.entries(pendingImportData).forEach(([sheet, rows]) => {
+  for(const [sheet, rows] of Object.entries(pendingImportData)) {
     const lower = sheet.toLowerCase();
-    if(lower.includes('sale') || lower.includes('مبيع')) {
-      rows.forEach(r => {
-        sales.push({
-          id:uid(),
-          date: r.Date||r.التاريخ||today(),
-          product: r.Product||r.المنتج||'غير محدد',
-          pos: r.POS||r['نقطة البيع']||'—',
-          qty: parseFloat(r.Qty||r.الكمية||0),
-          price: parseFloat(r.Price||r.السعر||0),
-          total: (parseFloat(r.Qty||r.الكمية||0)*parseFloat(r.Price||r.السعر||0)).toFixed(3),
-          status: r.Status||r.الحالة||'مكتمل',
-          notes: r.Notes||r.ملاحظات||''
-        });
+    for(const r of rows) {
+      if(lower.includes('sale')||lower.includes('مبيع')) {
+        const qty=parseFloat(r.Qty||r['الكمية']||0), price=parseFloat(r.Price||r['السعر']||0);
+        await apiPost('/sales',{date:String(r.Date||r['التاريخ']||today()),product:String(r.Product||r['المنتج']||''),pos:String(r.POS||r['نقطة البيع']||''),qty,price,status:String(r.Status||r['الحالة']||'مكتمل'),notes:String(r.Notes||r['ملاحظات']||'')});
         imported++;
-      });
-      save('sales', sales);
-    } else if(lower.includes('exp') || lower.includes('مصروف')) {
-      rows.forEach(r => {
-        expenses.push({
-          id:uid(),
-          date: r.Date||r.التاريخ||today(),
-          item: r.Item||r.البند||'—',
-          category: r.Category||r.التصنيف||'أخرى',
-          amount: parseFloat(r.Amount||r.المبلغ||0),
-          notes: r.Notes||r.ملاحظات||''
-        });
+      } else if(lower.includes('exp')||lower.includes('مصروف')) {
+        await apiPost('/expenses',{date:String(r.Date||r['التاريخ']||today()),item:String(r.Item||r['البند']||''),category:String(r.Category||r['التصنيف']||'أخرى'),amount:parseFloat(r.Amount||r['المبلغ']||0),notes:String(r.Notes||r['ملاحظات']||'')});
         imported++;
-      });
-      save('expenses', expenses);
-    } else if(lower.includes('inv') || lower.includes('مخزون')) {
-      const invArr = DB.get('inventory')||[];
-      rows.forEach(r => {
-        const product = r.Product||r.المنتج||'—';
-        const qty = parseFloat(r.Qty||r.الكمية||0);
-        const idx = invArr.findIndex(i=>i.product===product);
-        if(idx>-1) { invArr[idx].qty = parseFloat(invArr[idx].qty)+qty; }
-        else { invArr.push({product, unit:'وحدة', qty, cost:parseFloat(r.Cost||r.التكلفة||0), sell:parseFloat(r.SellPrice||r['سعر البيع']||0)}); }
+      } else if(lower.includes('inv')||lower.includes('مخزون')) {
+        await apiPost('/inventory',{product:String(r.Product||r['المنتج']||''),qty:parseFloat(r.Qty||r['الكمية']||0),cost:parseFloat(r.Cost||r['التكلفة']||0),sell:parseFloat(r.SellPrice||r['سعر البيع']||0),date:today(),notes:''});
         imported++;
-      });
-      save('inventory', invArr);
+      }
     }
-  });
-
+  }
+  await loadAll();
   toast(`تم استيراد ${imported} سجل بنجاح`);
   document.getElementById('importPreview').style.display='none';
   pendingImportData=null;
   document.getElementById('fileInput').value='';
+  renderDashboard();
 }
 
 function cancelImport() {
@@ -1663,8 +1652,7 @@ function exportExcel() {
   const wb = XLSX.utils.book_new();
   if(sales.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(sales.map(s=>({التاريخ:s.date,المنتج:s.product,'نقطة البيع':s.pos,الكمية:s.qty,السعر:s.price,الإجمالي:s.total,الحالة:s.status,ملاحظات:s.notes}))), 'المبيعات');
   if(expenses.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(expenses.map(e=>({التاريخ:e.date,البند:e.item,التصنيف:e.category,المبلغ:e.amount,ملاحظات:e.notes}))), 'المصروفات');
-  const inv = DB.get('inventory')||[];
-  if(inv.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(inv.map(i=>({المنتج:i.product,الكمية:i.qty,التكلفة:i.cost,'سعر البيع':i.sell}))), 'المخزون');
+  if(inventory.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(inventory.map(i=>({المنتج:i.product,الكمية:i.qty,التكلفة:i.cost,'سعر البيع':i.sell}))), 'المخزون');
   XLSX.writeFile(wb, 'golden-notes-data.xlsx');
   toast('تم تصدير البيانات');
 }
@@ -1690,8 +1678,15 @@ function closeModal(e) { if(e.target===document.getElementById('modalBg')) docum
 // ═══════════════════════════════════════
 document.getElementById('todayDate').textContent = new Date().toLocaleDateString('ar-OM',{weekday:'long',year:'numeric',month:'long',day:'numeric'});
 
-populateSelects();
-renderDashboard();
+async function init() {
+  toast('جاري تحميل البيانات...', 'success');
+  await loadAll();
+  populateSelects();
+  renderDashboard();
+}
+
+init();
+
 </script>
 </body>
 </html>
